@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+<script type="module" src="firebase.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -511,6 +512,8 @@ function loadData() {
 }
 function saveData() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.transactions));
+  // Mirror to Firebase if the module has finished loading.
+  if (window.kakeiboFB) window.kakeiboFB.save(state.transactions);
 }
 
 // ===== ユーティリティ =====
@@ -1151,6 +1154,42 @@ camShutterBtn.addEventListener('click', async () => {
 
 // ===== 起動 =====
 render();
+
+// ===== Firebase 同期 (firebase.js が用意する window.kakeiboFB を経由) =====
+(function attachFirebaseSync() {
+  function wire(fb) {
+    // 初回起動: リモートに保存済みデータがあれば取り込み、なければ初期 localStorage を push。
+    fb.onBoot((remote) => {
+      if (remote && Array.isArray(remote.transactions)) {
+        const remoteJSON = JSON.stringify(remote.transactions);
+        const localJSON  = JSON.stringify(state.transactions);
+        if (remoteJSON !== localJSON) {
+          state.transactions = remote.transactions;
+          localStorage.setItem(STORAGE_KEY, remoteJSON);
+          render();
+          showToast('クラウドからデータを取り込みました');
+        }
+      } else if (state.transactions.length > 0) {
+        // クラウド側が空ならローカルを初回 push
+        fb.save(state.transactions);
+      }
+    });
+    // 他端末で変更が起きたとき: ローカルを置き換えて再描画。
+    fb.setOnRemoteChange((txs) => {
+      state.transactions = Array.isArray(txs) ? txs : [];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.transactions));
+      render();
+      showToast('別の端末から同期しました');
+    });
+  }
+  if (window.kakeiboFB) { wire(window.kakeiboFB); return; }
+  // モジュールロード前に起動 script が走るケースに備えてポーリング。
+  let tries = 0;
+  const t = setInterval(() => {
+    if (window.kakeiboFB) { clearInterval(t); wire(window.kakeiboFB); }
+    else if (++tries > 60) { clearInterval(t); console.warn('[kakeibo] Firebase init timed out'); }
+  }, 200);
+})();
 </script>
 </body>
 </html>
